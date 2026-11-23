@@ -265,6 +265,7 @@ test.describe('MobilecliDriver.webViewBridge', () => {
           url: 'https://example.com/',
           title: 'Example',
           bundleId: 'com.example.app',
+          processName: 'com.example.app',
           bounds: { x: 0, y: 100, width: 390, height: 700 },
           isVisible: true,
         },
@@ -277,7 +278,10 @@ test.describe('MobilecliDriver.webViewBridge', () => {
         id: 'wv-1',
         url: 'https://example.com/',
         title: 'Example',
+        bundleId: 'com.example.app',
+        processName: 'com.example.app',
         nativeBounds: { x: 0, y: 100, width: 390, height: 700 },
+        isVisible: true,
       },
     ]);
   });

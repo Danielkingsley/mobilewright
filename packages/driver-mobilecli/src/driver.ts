@@ -782,7 +782,10 @@ export class MobilecliDriver implements MobilewrightSession, DeviceAllocator {
           id: e.id,
           url: e.url,
           title: e.title,
+          ...(e.bundleId && { bundleId: e.bundleId }),
+          ...(e.processName && { processName: e.processName }),
           ...(e.bounds && { nativeBounds: e.bounds }),
+          ...(e.isVisible !== undefined && { isVisible: e.isVisible }),
         }));
       },
       attachWebView: async (id: string): Promise<WebViewSession> => {

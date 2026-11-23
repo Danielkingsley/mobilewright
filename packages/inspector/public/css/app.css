@@ -180,6 +180,7 @@ header h1 {
 }
 
 #device-picker select,
+#page-picker select,
 #auto-refresh-interval,
 #theme-select,
 #target-select {
@@ -194,6 +195,7 @@ header h1 {
 }
 
 #device-picker select:focus,
+#page-picker select:focus,
 #auto-refresh-interval:focus,
 #theme-select:focus,
 #target-select:focus {
@@ -203,6 +205,17 @@ header h1 {
 #auto-refresh-interval:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+#page-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#page-picker label {
+  font-size: 11px;
+  color: var(--c-text-muted);
 }
 
 #refresh-controls {
@@ -380,6 +393,13 @@ main {
   stroke-width: 2.5;
 }
 
+.locator-match-rect {
+  fill: rgba(224, 80, 80, 0.18);
+  stroke: var(--c-status-error);
+  stroke-width: 3;
+  pointer-events: none;
+}
+
 /* ---- Elements pane ---- */
 
 #elements-pane {
@@ -391,6 +411,60 @@ main {
 #elements-list {
   padding: 0;
 }
+
+#locator-check-form {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 12px;
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+}
+
+#locator-check-form label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--c-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.locator-check-controls {
+  display: flex;
+  gap: 6px;
+}
+
+#locator-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--c-bg);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: 11px 'SF Mono', Menlo, Monaco, monospace;
+}
+
+#locator-check-btn {
+  background: var(--c-surface2);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+#locator-check-btn:disabled { opacity: 0.5; cursor: default; }
+
+#locator-check-status {
+  min-height: 14px;
+  margin-top: 5px;
+  color: var(--c-text-muted);
+  font-size: 10px;
+}
+
+#locator-check-status.error { color: var(--c-status-error); }
 
 .element-row {
   display: flex;
@@ -429,6 +503,8 @@ main {
 .badge-role   { background: var(--c-badge-role-bg);   color: var(--c-badge-role); }
 .badge-label  { background: var(--c-badge-label-bg);  color: var(--c-badge-label); }
 .badge-text   { background: var(--c-badge-text-bg);   color: var(--c-badge-text); }
+.badge-xpath  { background: var(--c-badge-role-bg);   color: var(--c-badge-role); }
+.badge-playwright { background: var(--c-badge-testid-bg); color: var(--c-badge-testid); }
 .badge-none   { background: var(--c-badge-none-bg);   color: var(--c-badge-none); }
 
 .locator-value {

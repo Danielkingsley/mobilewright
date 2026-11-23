@@ -322,6 +322,118 @@ test.describe('GET /api/inspect — screenshot scale', () => {
   });
 });
 
+test.describe('webview inspection', () => {
+  let server: TestServer;
+  const evaluationScripts: string[] = [];
+  let closedSessions = 0;
+  let webViewListCalls = 0;
+  let webViewListFails = false;
+  const webView = {
+    id: 'webview-1',
+    url: 'https://example.test',
+    title: 'Example',
+    bundleId: 'com.example.app',
+    processName: 'com.example.app',
+    nativeBounds: { x: 10, y: 20, width: 300, height: 600 },
+    isVisible: true,
+  };
+  const matchBounds = { x: 30, y: 50, width: 80, height: 40 };
+  const session = {
+    evaluate: async <T>(expression: string): Promise<T> => {
+      evaluationScripts.push(expression);
+      return (expression.includes('Invalid XPath locator') ? [matchBounds] : [{
+        index: 0,
+        depth: 0,
+        type: 'button',
+        label: 'Save',
+        text: 'Save',
+        bounds: matchBounds,
+        isVisible: true,
+        isEnabled: true,
+        isSelected: null,
+        isFocused: false,
+        isChecked: null,
+        isEditable: false,
+        raw: { id: 'save', xpathLocators: [{ strategy: 'id', locator: "//*[@id='save']" }] },
+        locator: { kind: 'xpath', strategy: 'id', value: "//*[@id='save']" },
+        locators: [{ kind: 'xpath', strategy: 'id', value: "//*[@id='save']" }],
+        match: null,
+      }]) as T;
+    },
+    url: async () => webView.url,
+    title: async () => webView.title,
+    goto: async () => {},
+    goBack: async () => {},
+    goForward: async () => {},
+    reload: async () => {},
+    waitForLoadState: async () => {},
+    close: async () => { closedSessions++; },
+  };
+
+  test.beforeAll(async () => {
+    server = await serveWithDevice({
+      ...inspectableDevice(),
+      driver: {
+        webViewBridge: {
+          listWebViews: async () => {
+            webViewListCalls++;
+            if (webViewListFails) throw new Error('webview bridge unavailable');
+            return [webView];
+          },
+          attachWebView: async () => session,
+        },
+      },
+    });
+  });
+  test.afterAll(() => server.close());
+  test.beforeEach(() => {
+    evaluationScripts.length = 0;
+    closedSessions = 0;
+    webViewListCalls = 0;
+    webViewListFails = false;
+  });
+
+  test('includes available webviews and their DOM elements', async () => {
+    const inspect = await get(`${server.base}/api/inspect`);
+    expect(inspect.status).toBe(200);
+    expect('webViews' in (inspect.body as object)).toBe(false);
+    expect(webViewListCalls).toBe(0);
+
+    const webViews = await get(`${server.base}/api/webviews`);
+    expect((webViews.body as { webViews: unknown[] }).webViews).toEqual([webView]);
+
+    const result = await get(`${server.base}/api/webview/inspect?webViewId=webview-1`);
+    expect(result.status).toBe(200);
+    expect((result.body as { elements: Array<{ raw: { xpathLocators: unknown[] } }> }).elements[0].raw.xpathLocators).toHaveLength(1);
+    expect(evaluationScripts[0]).toContain('xpathLocators');
+    expect(closedSessions).toBe(1);
+  });
+
+  test('evaluates a pasted XPath and returns match bounds', async () => {
+    const xpath = "//*[@id='save']";
+    const result = await post(`${server.base}/api/webview/locate`, { webViewId: webView.id, locator: xpath });
+    expect(result.status).toBe(200);
+    expect((result.body as { matches: unknown[] }).matches).toEqual([matchBounds]);
+    expect(evaluationScripts[0]).toContain(JSON.stringify(xpath));
+    expect(closedSessions).toBe(1);
+  });
+
+  test('returns not found for a stale webview id', async () => {
+    const result = await get(`${server.base}/api/webview/inspect?webViewId=stale-webview`);
+    expect(result.status).toBe(404);
+    expect((result.body as { error: string }).error).toBe('Webview "stale-webview" was not found');
+  });
+
+  test('keeps native inspection available when webview discovery fails', async () => {
+    webViewListFails = true;
+    const inspect = await get(`${server.base}/api/inspect`);
+    const webViews = await get(`${server.base}/api/webviews`);
+    expect(inspect.status).toBe(200);
+    expect(webViews.status).toBe(500);
+    expect((webViews.body as { error: string }).error).toBe('webview bridge unavailable');
+  });
+});
+
 test.describe('GET /api/inspect — etag', () => {
   let server: TestServer;
   const frame = { content: 'first frame' };

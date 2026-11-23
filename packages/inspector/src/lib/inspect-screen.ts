@@ -1,10 +1,11 @@
-// Captures one moment of the device screen for the Inspector and codegen: screenshot, element
-// list with derived locators, and screen size, plus an etag that changes whenever any of them does.
+// Captures one moment of the device screen: screenshot, element list with derived locators,
+// screen size, plus an etag that changes whenever the capture does.
 
 import { createHash } from 'node:crypto';
 import type { Device } from '@mobilewright/core';
 import type { ViewNode, ScreenSize } from '@mobilewright/protocol';
 import { deriveElementList, isEditable, locatorMatchPosition, type ElementEntry } from './locator-derivation.js';
+import { nativeXPathLocators, playwrightLocatorSuggestions } from './locator-suggestions.js';
 import { logger } from './logger.js';
 import { timeoutAfter } from './timeout.js';
 
@@ -35,7 +36,11 @@ type Capture = { screenshot: Buffer; tree: ViewNode[]; size: ScreenSize };
  * Capture the screen at `scale` (0 < scale <= 1). `screenSize` is injected so the caller can
  * serve it from a per-connection cache.
  */
-export async function inspectScreen(device: Device, scale: number, screenSize: () => Promise<ScreenSize>): Promise<InspectedScreen> {
+export async function inspectScreen(
+  device: Device,
+  scale: number,
+  screenSize: () => Promise<ScreenSize>,
+): Promise<InspectedScreen> {
   const { screenshot, tree, size } = await captureWithRetry({
     screenshot: () => device.screen.screenshot({ ...SCREENSHOT_FORMAT, scale }),
     tree: () => device.screen.viewTree(),
@@ -47,6 +52,7 @@ export async function inspectScreen(device: Device, scale: number, screenSize: (
 }
 
 function toElementJson({ node, locator, locators, depth }: ElementEntry, index: number, tree: ViewNode[]) {
+  const match = locator ? locatorMatchPosition(tree, node, locator) : null;
   return {
     index,
     depth,
@@ -64,10 +70,14 @@ function toElementJson({ node, locator, locators, depth }: ElementEntry, index: 
     isFocused: node.isFocused ?? null,
     isChecked: node.isChecked ?? null,
     isEditable: isEditable(node),
-    raw: node.raw ?? null,
+    raw: {
+      ...(node.raw ?? {}),
+      xpathLocators: nativeXPathLocators(node),
+      playwrightLocators: playwrightLocatorSuggestions(locators, match),
+    },
     locator,
     locators,
-    match: locator ? locatorMatchPosition(tree, node, locator) : null,
+    match,
   };
 }
 
@@ -80,7 +90,7 @@ function etagOf(screenshot: Buffer, screen: InspectedScreen['screen'], elements:
 }
 
 /**
- * Run the three captures, retrying up to MAX_RETRIES.
+ * Run the captures, retrying up to MAX_RETRIES.
  *
  * Strategy: first attempt runs all 3 in parallel for speed.  Retries
  * run only the failed ops sequentially (1 at a time) so that abandoned

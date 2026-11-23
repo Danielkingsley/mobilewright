@@ -13,6 +13,16 @@
         <option value="">No devices found</option>
       </select>
     </div>
+    <div id="page-picker">
+      <label for="view-mode-select">Page</label>
+      <select id="view-mode-select" aria-label="Page type">
+        <option value="native">Native</option>
+        <option value="webview" disabled>Webview</option>
+      </select>
+      <select id="webview-select" aria-label="Webview page" hidden disabled>
+        <option value="">No webviews found</option>
+      </select>
+    </div>
     <div id="refresh-controls">
       <button id="refresh-btn">Refresh</button>
       <label class="auto-refresh-label">
@@ -60,6 +70,14 @@
     </section>
     <div class="splitter" id="screenshot-splitter" role="separator" aria-orientation="vertical" aria-label="Resize device pane" tabindex="0"></div>
     <section id="elements-pane">
+      <form id="locator-check-form">
+        <label for="locator-input">Check locator</label>
+        <div class="locator-check-controls">
+          <input id="locator-input" type="text" placeholder="Paste an XPath or locator suggestion" autocomplete="off" />
+          <button type="submit" id="locator-check-btn">Check</button>
+        </div>
+        <div id="locator-check-status" aria-live="polite"></div>
+      </form>
       <div id="elements-list"></div>
     </section>
     <div class="splitter" id="detail-splitter" role="separator" aria-orientation="vertical" aria-label="Resize inspector pane" tabindex="0"></div>

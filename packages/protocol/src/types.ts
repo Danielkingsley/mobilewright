@@ -188,7 +188,10 @@ export interface WebViewInfo {
   id: string;
   url: string;
   title: string;
+  bundleId?: string;
+  processName?: string;
   nativeBounds?: Bounds;
+  isVisible?: boolean;
 }
 
 // ─── Recording ──────────────────────────────────────────────────

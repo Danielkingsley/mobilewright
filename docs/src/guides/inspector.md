@@ -35,6 +35,18 @@ npx mobilewright inspect --port 8080
    recommended locator.
 4. Click a row to highlight that element's bounding box on the screenshot, or click
    a box on the screenshot to select its row.
+5. Use **Page** to switch between the native hierarchy and an available Webview.
+   Element details include generated XPath and Playwright locator suggestions
+   alongside raw attributes. Copy a suggestion into **Check locator** to highlight
+   its matches. In Webview mode, arbitrary XPath expressions can also be checked.
+   In Native mode, XPath is evaluated against the current captured hierarchy, and
+   copied Playwright suggestions are checked against the available elements.
+   If webview discovery times out, the native screenshot and element list remain
+   available; the status bar reports the webview error. Webview choices show their
+   owning app when available, and the visible target is preferred. If inspection
+   fails, the Inspector stays in Webview mode so you can select another target.
+   On Android, the owning app must be debuggable and have WebView debugging enabled
+   for DOM inspection and XPath locators to work.
 
 You can switch the color **Theme** (Void, Aurora, Crimson, Arctic, Synthwave) from
 the header — purely cosmetic.

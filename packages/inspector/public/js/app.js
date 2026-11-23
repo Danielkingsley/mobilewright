@@ -20,6 +20,8 @@ export function escQ(s) {
 }
 
 function locatorLabel(locator) {
+  if (locator.kind === 'playwright') return locator.value
+  if (locator.kind === 'xpath') return locator.value
   if (locator.kind === 'testId') return `getByTestId('${escQ(locator.value)}')`
   if (locator.kind === 'role') {
     return locator.name
@@ -42,6 +44,70 @@ export function locatorCode(el) {
     return `${base}.nth(${el.match.index})`
   }
   return base
+}
+
+function matchesLocatorSuggestion(el, locator) {
+  const raw = el.raw ?? {}
+  const suggestions = [
+    locatorCode(el),
+    ...(el.locators ?? []).map(locatorLabel),
+    ...(raw.xpathLocators ?? []).map(item => item.locator),
+    ...(raw.playwrightLocators ?? []).map(item => item.locator),
+  ]
+  return suggestions.includes(locator)
+}
+
+function nativeXPathBounds(elements, xpath) {
+  const xml = document.implementation.createDocument(null, 'hierarchy')
+  const nodes = new Map()
+  const parents = [xml.documentElement]
+
+  for (const element of elements) {
+    const depth = Math.max(0, element.depth ?? 0)
+    parents.length = depth + 1
+    const parent = parents[depth] ?? xml.documentElement
+    const tag = /^[A-Za-z_][\w.-]*$/.test(element.type ?? '') ? element.type : 'element'
+    const node = xml.createElement(tag)
+    const attributes = {
+      ...(element.raw ?? {}),
+      type: element.type,
+      text: element.text,
+      label: element.label,
+      identifier: element.identifier,
+      resourceId: element.resourceId,
+      placeholder: element.placeholder,
+      value: element.value,
+    }
+
+    for (const [name, value] of Object.entries(attributes)) {
+      if (!/^[A-Za-z_][\w.-]*$/.test(name) || value == null || typeof value === 'object') continue
+      const stringValue = String(value)
+      node.setAttribute(name, stringValue)
+      if (name === 'resourceId') node.setAttribute('resource-id', stringValue)
+      if (name === 'contentDescription') node.setAttribute('content-desc', stringValue)
+      if (name === 'type' && stringValue.startsWith('android.')) node.setAttribute('class', stringValue)
+    }
+
+    parent.appendChild(node)
+    parents[depth + 1] = node
+    nodes.set(node, element)
+  }
+
+  let result
+  try {
+    result = document.evaluate(xpath, xml, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null)
+  } catch (error) {
+    throw new Error(`Invalid XPath locator: ${error.message}`)
+  }
+
+  const bounds = []
+  for (let index = 0; index < result.snapshotLength; index++) {
+    const element = nodes.get(result.snapshotItem(index))
+    if (element?.isVisible && element.bounds?.width > 0 && element.bounds?.height > 0) {
+      bounds.push(element.bounds)
+    }
+  }
+  return bounds
 }
 
 function buildDuplicateSet(elements) {
@@ -75,6 +141,7 @@ export class ScreenshotPane {
   #screenshotPane  // cached pane element for #constrainSize
   // O(1) lookup from element index to its SVG rect; rebuilt on each renderHighlights call.
   #rectByIndex = new Map()
+  #locatorRects = []
   #showAllHighlights
   #hoverRect = null
 
@@ -170,6 +237,25 @@ export class ScreenshotPane {
     this.#buildRects()
   }
 
+  showLocatorHighlights(bounds) {
+    this.clearLocatorHighlights()
+    for (const bound of bounds) {
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      rect.setAttribute('x', bound.x)
+      rect.setAttribute('y', bound.y)
+      rect.setAttribute('width', bound.width)
+      rect.setAttribute('height', bound.height)
+      rect.classList.add('locator-match-rect')
+      this.#locatorRects.push(rect)
+      this.#overlay.appendChild(rect)
+    }
+  }
+
+  clearLocatorHighlights() {
+    for (const rect of this.#locatorRects) rect.remove()
+    this.#locatorRects = []
+  }
+
   setSelectedIndex(index) {
     // O(1): deselect old rect, select new one directly via index map.
     this.#rectByIndex.get(this.#selectedIndex)?.classList.remove('selected')
@@ -179,6 +265,7 @@ export class ScreenshotPane {
 
   #buildRects() {
     this.#overlay.innerHTML = ''
+    this.#locatorRects = []
     this.#hoverRect = null
     this.#rectByIndex.clear()
     if (!this.#showAllHighlights) {
@@ -275,20 +362,37 @@ export class DetailPane {
 
     // Locators
     this.#locatorsEl.innerHTML = ''
-    if (el.locators?.length) {
+    const locators = [...(el.locators ?? [])]
+    const seenLocators = new Set(locators.map(locatorLabel))
+    for (const item of el.raw?.xpathLocators ?? []) {
+      if (item.locator && !seenLocators.has(item.locator)) {
+        locators.push({ kind: 'xpath', strategy: item.strategy, value: item.locator })
+        seenLocators.add(item.locator)
+      }
+    }
+    if (!locators.some(locator => locator.kind !== 'xpath')) {
+      for (const item of el.raw?.playwrightLocators ?? []) {
+        if (item.locator && !seenLocators.has(item.locator)) {
+          locators.push({ kind: 'playwright', strategy: item.strategy, value: item.locator })
+          seenLocators.add(item.locator)
+        }
+      }
+    }
+    if (locators.length) {
       const label = document.createElement('div')
       label.className = 'detail-section-label'
       label.textContent = 'Locator Strategies'
       this.#locatorsEl.appendChild(label)
 
-      for (const loc of el.locators) {
+      for (const loc of locators) {
         const row = document.createElement('div')
         row.className = 'detail-locator-row'
         row.title = 'Click to copy'
 
         const badge = document.createElement('span')
         badge.className = `locator-badge badge-${loc.kind}`
-        badge.textContent = loc.kind
+        badge.textContent = loc.strategy ?? loc.kind
+        if (loc.strategy) badge.title = `${loc.strategy} ${loc.kind === 'xpath' ? 'XPath' : 'locator'}`
         row.appendChild(badge)
 
         const val = document.createElement('span')
@@ -549,6 +653,13 @@ export class Inspector {
     devices: [],
     activeId: null,
     elements: [],
+    nativeElements: [],
+    webViews: [],
+    webViewsLoaded: false,
+    webViewDiscoveryError: null,
+    webViewInspectionError: null,
+    pageMode: 'native',
+    activeWebViewId: null,
     selectedIndex: null,
     logicalWidth: 0,
     logicalHeight: 0,
@@ -575,6 +686,12 @@ export class Inspector {
   #elementsPane
   #detailPane
   #deviceSelect = document.getElementById('device-select')
+  #viewModeSelect = document.getElementById('view-mode-select')
+  #webViewSelect = document.getElementById('webview-select')
+  #locatorCheckForm = document.getElementById('locator-check-form')
+  #locatorInput = document.getElementById('locator-input')
+  #locatorCheckButton = document.getElementById('locator-check-btn')
+  #locatorCheckStatus = document.getElementById('locator-check-status')
   #refreshBtn = document.getElementById('refresh-btn')
   #autoRefreshToggle = document.getElementById('auto-refresh-toggle')
   #autoRefreshInterval = document.getElementById('auto-refresh-interval')
@@ -598,7 +715,7 @@ export class Inspector {
     this.#elementsPane.onToggleHidden(i => this.#toggleHidden(i))
     this.#detailPane.onClose(() => { this.#state.selectedIndex = null; this.#screenshotPane.setSelectedIndex(null); this.#elementsPane.setSelectedIndex(null) })
 
-    this.#refreshBtn?.addEventListener('click', () => this.refresh())
+    this.#refreshBtn?.addEventListener('click', () => this.refresh(true))
     this.#deviceSelect.addEventListener('change', () => {
       const opt = this.#deviceSelect.selectedOptions[0]
       if (!opt?.value) return
@@ -607,6 +724,27 @@ export class Inspector {
     })
     this.#autoRefreshToggle?.addEventListener('change', () => this.#applyAutoRefresh())
     this.#autoRefreshInterval?.addEventListener('change', () => this.#applyAutoRefresh())
+    this.#viewModeSelect?.addEventListener('change', () => {
+      this.#state.pageMode = this.#viewModeSelect.value
+      this.#shownEtag = null
+      this.#syncPagePicker()
+      if (this.#state.pageMode === 'webview') {
+        this.#renderElements([])
+      } else {
+        this.#renderElements(this.#state.nativeElements)
+      }
+      this.refresh()
+    })
+    this.#webViewSelect?.addEventListener('change', () => {
+      this.#state.activeWebViewId = this.#webViewSelect.value || null
+      this.#state.webViewInspectionError = null
+      this.#shownEtag = null
+      this.refresh()
+    })
+    this.#locatorCheckForm?.addEventListener('submit', event => {
+      event.preventDefault()
+      this.#checkLocator()
+    })
 
     if (continuousRefresh) {
       this.#refreshContinuously()
@@ -615,7 +753,7 @@ export class Inspector {
     this.#loadDevices()
   }
 
-  async refresh() {
+  async refresh(forceWebViewDiscovery = false) {
     if (!this.#state.activeId) return
     if (this.#refreshInFlight) return
     this.#refreshInFlight = true
@@ -623,15 +761,19 @@ export class Inspector {
 
     try {
       const query = new URLSearchParams({ scale: this.#screenshotPane.preferredScreenshotScale() })
-      if (this.#shownEtag) {
+      if (!forceWebViewDiscovery && this.#shownEtag) {
         query.set('etag', this.#shownEtag)
       }
       const res = await fetch(`/api/inspect?${query}`)
       if (res.status === 503) return  // another inspect in flight, skip this tick — no state changed yet
       if (res.status === 304) {
-        // Screenshot, elements and screen are exactly what is already shown; keep hover and selection.
-        // Still reset the status, which may show an earlier failed refresh.
-        this.#setStatus(`${this.#state.elements.length} elements`)
+        const webViewError = this.#state.pageMode === 'webview'
+          ? await this.#refreshWebViewElements(forceWebViewDiscovery)
+          : this.#state.webViewDiscoveryError
+        const message = webViewError
+          ? `Webview unavailable: ${webViewError}`
+          : `${this.#state.elements.length} elements`
+        this.#setStatus(message, webViewError ? 'error' : '')
         this.#consecutiveErrors = 0
         return
       }
@@ -643,6 +785,12 @@ export class Inspector {
         this.#shownEtag = null
         this.#state.activeId = null
         this.#state.elements = []
+        this.#state.nativeElements = []
+        this.#state.webViews = []
+        this.#state.webViewsLoaded = false
+        this.#state.webViewDiscoveryError = null
+        this.#state.webViewInspectionError = null
+        this.#state.activeWebViewId = null
         this.#state.hiddenIndices = new Set()
         this.#state.selectedIndex = null
         this.#screenshotPane.showPlaceholder('Device disconnected', 'Select a device to continue')
@@ -650,6 +798,7 @@ export class Inspector {
         this.#screenshotPane.renderHighlights([], new Set(), null)
         this.#setStatus('Device disconnected', 'error')
         this.#renderDevicePicker()
+        this.#renderWebViewPicker([])
         return
       }
       if (!res.ok) {
@@ -657,26 +806,23 @@ export class Inspector {
         throw new Error(err.error ?? res.statusText)
       }
       const data = await res.json()
-      this.#state.elements = data.elements ?? []
-      this.#state.selectedIndex = null
-      this.#detailPane.hide()
+      const screenChanged = data.etag !== this.#shownEtag
+      this.#state.nativeElements = data.elements ?? []
       this.#state.logicalWidth = data.screen?.width ?? 0
       this.#state.logicalHeight = data.screen?.height ?? 0
 
-      // Prune overrides for locator keys no longer present in the new element list.
-      const liveKeys = new Set(
-        this.#state.elements.filter(el => el.locator).map(el => locatorKey(el.locator))
-      )
-      for (const k of this.#userOverrides.keys()) {
-        if (!liveKeys.has(k)) this.#userOverrides.delete(k)
-      }
-
-      this.#state.hiddenIndices = this.#computeHiddenIndices()
-
       this.#screenshotPane.showScreenshot(data.screenshot, this.#state.logicalWidth, this.#state.logicalHeight, data.screen?.scale ?? 0)
-      this.#elementsPane.render(this.#state.elements, this.#state.hiddenIndices)
-      this.#screenshotPane.renderHighlights(this.#state.elements, this.#state.hiddenIndices, null)
-      this.#setStatus(`${this.#state.elements.length} elements`)
+      if (this.#state.pageMode === 'native') {
+        this.#state.selectedIndex = null
+        this.#detailPane.hide()
+        this.#renderElements(this.#state.nativeElements)
+      }
+      const webViewError = await this.#refreshWebViewElements(forceWebViewDiscovery)
+      if (screenChanged) {
+        this.#screenshotPane.clearLocatorHighlights()
+        this.#locatorCheckStatus && (this.#locatorCheckStatus.textContent = '')
+      }
+      this.#setStatus(webViewError ? `Webview unavailable: ${webViewError}` : `${this.#state.elements.length} elements`, webViewError ? 'error' : '')
       this.#shownEtag = data.etag ?? null
       this.#consecutiveErrors = 0
     } catch (err) {
@@ -707,6 +853,59 @@ export class Inspector {
     }
   }
 
+  async #discoverWebViews() {
+    const previous = this.#state.webViews.find(webView => webView.id === this.#state.activeWebViewId)
+    const response = await fetch('/api/webviews')
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error ?? response.statusText)
+    this.#state.webViews = data.webViews ?? []
+    this.#state.webViewsLoaded = true
+    this.#state.webViewDiscoveryError = null
+    const active = this.#state.webViews.find(webView => webView.id === this.#state.activeWebViewId)
+      ?? (previous?.bundleId && this.#state.webViews.find(webView => webView.bundleId === previous.bundleId && webView.url === previous.url))
+      ?? (previous?.bundleId && this.#state.webViews.find(webView => webView.bundleId === previous.bundleId))
+      ?? (previous?.processName && this.#state.webViews.find(webView => webView.processName === previous.processName))
+      ?? this.#state.webViews.find(webView => webView.isVisible)
+      ?? this.#state.webViews[0]
+    this.#state.activeWebViewId = active?.id ?? null
+    this.#renderWebViewPicker(this.#state.webViews)
+  }
+
+  async #refreshWebViewElements(forceDiscovery) {
+    let error = this.#state.webViewDiscoveryError
+    if (!this.#state.webViewsLoaded || forceDiscovery) {
+      try {
+        await this.#discoverWebViews()
+        error = null
+      } catch (err) {
+        this.#state.webViews = []
+        this.#state.activeWebViewId = null
+        this.#state.webViewsLoaded = true
+        this.#state.webViewDiscoveryError = err.message
+        error = err.message
+        this.#renderWebViewPicker([])
+      }
+    } else {
+      this.#renderWebViewPicker(this.#state.webViews)
+    }
+
+    if (!error && this.#state.pageMode === 'webview' && this.#state.activeWebViewId) {
+      try {
+        await this.#renderPageElements()
+        this.#state.webViewInspectionError = null
+      } catch (err) {
+        error = `Webview inspection failed: ${err.message}`
+        this.#state.webViewInspectionError = error
+        const fallbackElements = this.#state.pageMode === 'webview' ? [] : this.#state.nativeElements
+        if (this.#state.elements !== fallbackElements) this.#renderElements(fallbackElements)
+      }
+    }
+    if (this.#state.pageMode === 'native' && this.#state.elements !== this.#state.nativeElements) {
+      this.#renderElements(this.#state.nativeElements)
+    }
+    return error ?? (this.#state.pageMode === 'webview' ? this.#state.webViewInspectionError : null)
+  }
+
   async #fetchDevices() {
     const res = await fetch('/api/devices')
     if (!res.ok) throw new Error(`Device list failed: ${res.status}`)
@@ -714,14 +913,29 @@ export class Inspector {
     const prevActiveId = this.#state.activeId
     this.#state.devices = data.devices ?? []
     this.#state.activeId = data.activeId ?? null
-    if (this.#state.activeId !== prevActiveId) this.#userOverrides.clear()
+    if (this.#state.activeId !== prevActiveId) {
+      this.#shownEtag = null
+      this.#userOverrides.clear()
+      this.#state.webViews = []
+      this.#state.webViewsLoaded = false
+      this.#state.webViewDiscoveryError = null
+      this.#state.webViewInspectionError = null
+      this.#state.activeWebViewId = null
+    }
     this.#renderDevicePicker()
     if (prevActiveId && !this.#state.activeId) {
       this.#shownEtag = null
       this.#state.elements = []
+      this.#state.nativeElements = []
+      this.#state.webViews = []
+      this.#state.webViewsLoaded = false
+      this.#state.webViewDiscoveryError = null
+      this.#state.webViewInspectionError = null
+      this.#state.activeWebViewId = null
       this.#state.selectedIndex = null
       this.#state.hiddenIndices = new Set()
       this.#elementsPane.render([], new Set())
+      this.#renderWebViewPicker([])
       this.#screenshotPane.showPlaceholder('Device disconnected', 'Select a device to continue')
       this.#setStatus('Device disconnected', 'error')
     }
@@ -782,6 +996,11 @@ export class Inspector {
       }
       this.#state.activeId = device.id
       this.#userOverrides.clear()
+      this.#state.webViews = []
+      this.#state.webViewsLoaded = false
+      this.#state.webViewDiscoveryError = null
+      this.#state.webViewInspectionError = null
+      this.#state.activeWebViewId = null
       this.#renderDevicePicker()
       await this.refresh()
     } catch (err) {
@@ -801,6 +1020,137 @@ export class Inspector {
     this.#elementsPane.setSelectedIndex(index)
     const el = this.#state.elements.find(e => e.index === index)
     this.#detailPane.show(el ?? null)
+  }
+
+  #renderWebViewPicker(webViews) {
+    if (!this.#webViewSelect) return
+    const previousId = this.#state.activeWebViewId
+    this.#webViewSelect.innerHTML = ''
+    if (webViews.length === 0) {
+      const option = document.createElement('option')
+      option.value = ''
+      option.textContent = 'No webviews found'
+      this.#webViewSelect.appendChild(option)
+      this.#state.activeWebViewId = null
+    } else {
+      for (const webView of webViews) {
+        const option = document.createElement('option')
+        option.value = webView.id
+        const owner = webView.bundleId || webView.processName
+        const label = webView.title || webView.url || webView.id
+        const visibility = webView.isVisible === false ? ' [hidden]' : ''
+        option.textContent = `${label}${owner ? ` (${owner})` : ''}${visibility}`
+        option.title = [webView.url, owner].filter(Boolean).join('\n') || webView.id
+        this.#webViewSelect.appendChild(option)
+      }
+      this.#state.activeWebViewId = webViews.some(webView => webView.id === previousId)
+        ? previousId
+        : webViews[0].id
+    }
+    this.#syncPagePicker()
+  }
+
+  #syncPagePicker() {
+    if (!this.#viewModeSelect || !this.#webViewSelect) return
+    const webViewOption = this.#viewModeSelect.querySelector('option[value="webview"]')
+    webViewOption.disabled = this.#state.webViews.length === 0
+    if (webViewOption.disabled && this.#state.pageMode === 'webview') {
+      this.#state.pageMode = 'native'
+      this.#viewModeSelect.value = 'native'
+    }
+    this.#viewModeSelect.value = this.#state.pageMode
+    this.#webViewSelect.hidden = this.#state.pageMode !== 'webview'
+    this.#webViewSelect.disabled = this.#state.webViews.length === 0
+    this.#webViewSelect.value = this.#state.activeWebViewId ?? ''
+  }
+
+  async #renderPageElements(retryStaleTarget = true) {
+    let elements
+    if (this.#state.pageMode === 'webview' && this.#state.activeWebViewId) {
+      const requestedWebViewId = this.#state.activeWebViewId
+      const query = new URLSearchParams({ webViewId: requestedWebViewId })
+      const res = await fetch(`/api/webview/inspect?${query}`)
+      const data = await res.json()
+      if (!res.ok) {
+        const message = data.error ?? res.statusText
+        if (retryStaleTarget && res.status === 404 && message.includes('was not found')) {
+          await this.#discoverWebViews()
+          if (this.#state.activeWebViewId) return this.#renderPageElements(false)
+        }
+        throw new Error(message)
+      }
+      elements = data.elements ?? []
+      this.#state.webViews = this.#state.webViews.map(webView =>
+        webView.id === data.webView.id ? data.webView : webView,
+      )
+      this.#renderWebViewPicker(this.#state.webViews)
+    } else {
+      elements = this.#state.nativeElements
+    }
+
+    if (JSON.stringify(this.#state.elements) !== JSON.stringify(elements)) {
+      this.#renderElements(elements)
+    }
+  }
+
+  #renderElements(elements) {
+    this.#state.elements = elements
+    this.#state.selectedIndex = null
+    this.#detailPane.hide()
+    const liveKeys = new Set(this.#state.elements.filter(el => el.locator).map(el => locatorKey(el.locator)))
+    for (const key of this.#userOverrides.keys()) {
+      if (!liveKeys.has(key)) this.#userOverrides.delete(key)
+    }
+    this.#state.hiddenIndices = this.#computeHiddenIndices()
+    this.#elementsPane.render(this.#state.elements, this.#state.hiddenIndices)
+    this.#screenshotPane.renderHighlights(this.#state.elements, this.#state.hiddenIndices, null)
+  }
+
+  async #locateWebViewXPath(locator, retryStaleTarget = true) {
+    const response = await fetch('/api/webview/locate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webViewId: this.#state.activeWebViewId, locator }),
+    })
+    const data = await response.json()
+    if (!response.ok) {
+      const message = data.error ?? response.statusText
+      if (retryStaleTarget && response.status === 404 && message.includes('was not found')) {
+        await this.#discoverWebViews()
+        if (this.#state.activeWebViewId) return this.#locateWebViewXPath(locator, false)
+      }
+      throw new Error(message)
+    }
+    return data.matches ?? []
+  }
+
+  async #checkLocator() {
+    const locator = this.#locatorInput?.value.trim()
+    if (!locator) return
+    this.#locatorCheckButton.disabled = true
+    this.#locatorCheckStatus.textContent = 'Checking...'
+    this.#locatorCheckStatus.className = ''
+    this.#screenshotPane.clearLocatorHighlights()
+    try {
+      const localMatches = this.#state.elements.filter(element => matchesLocatorSuggestion(element, locator))
+      let bounds = localMatches.map(element => element.bounds)
+      const isPlaywrightLocator = /^(?:getBy(?:TestId|Role|Text|Label|Placeholder|Title)\(|locator\()/.test(locator)
+      if (bounds.length === 0 && this.#state.pageMode === 'native' && !isPlaywrightLocator) {
+        bounds = nativeXPathBounds(this.#state.elements, locator)
+      } else if (bounds.length === 0 && this.#state.pageMode === 'webview' && this.#state.activeWebViewId
+          && !isPlaywrightLocator) {
+        bounds = await this.#locateWebViewXPath(locator)
+      }
+      this.#screenshotPane.showLocatorHighlights(bounds)
+      this.#locatorCheckStatus.textContent = bounds.length
+        ? `${bounds.length} match${bounds.length === 1 ? '' : 'es'}`
+        : 'No visible matches on the current page'
+    } catch (err) {
+      this.#locatorCheckStatus.textContent = err.message
+      this.#locatorCheckStatus.className = 'error'
+    } finally {
+      this.#locatorCheckButton.disabled = false
+    }
   }
 
   #toggleHidden(index) {
